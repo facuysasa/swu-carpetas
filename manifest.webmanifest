@@ -1,0 +1,17 @@
+{
+  "name": "Carpetas SWU",
+  "short_name": "Carpetas",
+  "description": "Ordená tus cartas de Star Wars: Unlimited en tus carpetas.",
+  "lang": "es",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#c6a275",
+  "theme_color": "#202329",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
