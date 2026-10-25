@@ -18,7 +18,7 @@ async function getJson(url, headers = {}, tries = 3) {
     try {
       const res = await fetch(url, {
         headers: { Accept: 'application/json', 'User-Agent': 'carpetas-swu/1.0 (catalogo personal)', ...headers },
-        signal: AbortSignal.timeout(45000),
+        signal: AbortSignal.timeout(30000),
       });
       if (res.status === 404) { const e = new Error('HTTP 404'); e.code = 404; throw e; }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -191,27 +191,18 @@ function mediaUrl(m) {
 }
 const names = x => arr(rel(x)).map(e => (e && (e.name || e.title)) || '').filter(Boolean);
 
-async function loadOfficial(map, locale, report) {
+async function loadOfficial(map, locale, report, { budgetMs = 9 * 60000 } = {}) {
   const headers = { Origin: 'https://starwarsunlimited.com', Referer: 'https://starwarsunlimited.com/' };
-  let page = 1;
-  let pages = 1;
+  const es = locale.startsWith('es');
+  // Solo las relaciones necesarias: con todo incluido cada página es muy pesada
+  const populate = es ? 'expansion,artFront,artBack,variantOf' : 'expansion,artFront,artBack,variantOf,type,aspects,traits,arenas,keywords,rarity,variantTypes';
+  const url = page => `${OFFICIAL}?${new URLSearchParams({ locale, 'pagination[page]': String(page), 'pagination[pageSize]': '100', 'sort[0]': 'id:asc', populate })}`;
+  const t0 = Date.now();
   let seen = 0;
   let matched = 0;
   let created = 0;
-  while (page <= pages) {
-    const q = new URLSearchParams({
-      locale,
-      'pagination[page]': String(page),
-      'pagination[pageSize]': '100',
-      'sort[0]': 'id:asc',
-      populate: '*',
-    });
-    const j = await getJson(`${OFFICIAL}?${q}`, headers);
-    const data = j.data || [];
-    const meta = (j.meta && j.meta.pagination) || {};
-    pages = meta.pageCount || pages;
-    if (page === 1) log(`  oficial ${locale}: ${meta.total ?? '?'} cartas en ${pages} páginas`);
-    for (const item of data) {
+  const handle = data => {
+    for (const item of data || []) {
       const a = item.attributes || item;
       const exp = rel(a.expansion);
       const code = String((exp && exp.code) || '').toUpperCase();
@@ -224,7 +215,7 @@ async function loadOfficial(map, locale, report) {
       const front = mediaUrl(a.artFront);
       const back = mediaUrl(a.artBack);
       const cur = map.get(k);
-      if (locale.startsWith('es')) {
+      if (es) {
         if (!cur) continue;
         map.set(k, clean({ ...cur, ie: front, ieb: back, ne: a.title, se: a.subtitle }));
         matched++;
@@ -241,10 +232,29 @@ async function loadOfficial(map, locale, report) {
         map.set(k, { ...cur, i: front, ...(back && !cur.ib ? { ib: back } : {}) });
       }
     }
-    page++;
-    await sleep(PAUSE);
-  }
-  report[locale] = { seen, matched, created };
+  };
+  const first = await getJson(url(1), headers, 2);
+  const pages = (first.meta && first.meta.pagination && first.meta.pagination.pageCount) || 1;
+  log(`  oficial ${locale}: ${(first.meta && first.meta.pagination && first.meta.pagination.total) ?? '?'} cartas en ${pages} páginas`);
+  handle(first.data);
+  const todo = [];
+  for (let p = 2; p <= pages; p++) todo.push(p);
+  let done = 1;
+  let failed = 0;
+  let cut = false;
+  // De a cuatro páginas a la vez y con tiempo máximo: si se pasa, se guarda lo que se llegó a traer
+  const worker = async () => {
+    while (todo.length) {
+      if (Date.now() - t0 > budgetMs) { cut = true; return; }
+      const p = todo.shift();
+      try { handle((await getJson(url(p), headers, 2)).data); } catch { failed++; }
+      done++;
+      if (done % 10 === 0) log(`    ${locale}: ${done} de ${pages} páginas (${Math.round((Date.now() - t0) / 1000)} s)`);
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  if (cut) log(`    ${locale}: se cortó por tiempo en ${done} de ${pages} páginas; lo que falta se completa en la próxima corrida`);
+  report[locale] = { seen, matched, created, pages, done, failed, cut };
   return seen;
 }
 
@@ -274,8 +284,9 @@ async function main() {
   await loadSwuDb(map, sets, report.swudb);
 
   log('Base oficial…');
-  for (const loc of ['en']) {
-    try { await loadOfficial(map, loc, report.oficial); } catch (e) { report.oficial.errorEn = e.message; log(`  oficial en falló: ${e.message}`); }
+  // En inglés solo hace falta si swu-db no respondió (los datos ya están)
+  if (!report.swudb.sets) {
+    try { await loadOfficial(map, 'en', report.oficial); } catch (e) { report.oficial.errorEn = e.message; log(`  oficial en falló: ${e.message}`); }
   }
   let esOk = false;
   for (const loc of ['es', 'es-ES']) {
